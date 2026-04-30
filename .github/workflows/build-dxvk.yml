@@ -1,49 +1,69 @@
-# This is a GitHub Actions file that builds artifacts for x86 and x64 DLLs separately.
+name: Build DXVK
 
-name: Build DXVK Artifacts
-
-on:
-  push:
-    branches:
-      - main
+on: [push, pull_request, workflow_dispatch]
 
 jobs:
-  build-x86:
-    runs-on: ubuntu-latest
+  build-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x86, x64]
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
+    - name: Checkout DXVK
+      uses: actions/checkout@v4
+      with:
+        repository: doitsujin/dxvk
+        submodules: recursive
+        fetch-depth: 0
 
-      - name: Setup Environment
-        run: |
-          sudo apt-get install -y build-essential
+    - name: Setup glslangValidator
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/HansKristian-Work/vkd3d-proton-ci/main/glslangValidator.exe" -OutFile "glslangValidator.exe"
+        Write-Output "$pwd" | Out-File -FilePath "${Env:GITHUB_PATH}" -Append
 
-      - name: Build x86 DLLs
-        run: |
-          # Your build commands for x86 go here
+    - name: Setup Meson
+      shell: pwsh
+      run: pip install meson
 
-      - name: Upload x86 Artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: x86-dlls
-          path: path/to/x86.dll
+    - name: Find Visual Studio
+      shell: pwsh
+      run: |
+        $installationPath = Get-VSSetupInstance `
+          | Select-VSSetupInstance -Require Microsoft.VisualStudio.Workload.NativeDesktop -Latest `
+          | Select-Object -ExpandProperty InstallationPath
+        Write-Output "VSDEVCMD=${installationPath}\Common7\Tools\VsDevCmd.bat" `
+          | Out-File -FilePath "${Env:GITHUB_ENV}" -Append
 
-  build-x64:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
+    - name: Download D3D8 SDK Headers
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -URI https://raw.githubusercontent.com/NovaRain/DXSDK_Collection/master/DXSDK_Aug2007/Include/d3d8.h -OutFile include/d3d8.h
+        Invoke-WebRequest -URI https://raw.githubusercontent.com/NovaRain/DXSDK_Collection/master/DXSDK_Aug2007/Include/d3d8types.h -OutFile include/d3d8types.h
+        Invoke-WebRequest -URI https://raw.githubusercontent.com/NovaRain/DXSDK_Collection/master/DXSDK_Aug2007/Include/d3d8caps.h -OutFile include/d3d8caps.h
 
-      - name: Setup Environment
-        run: |
-          sudo apt-get install -y build-essential
+    - name: Build MSVC ${{ matrix.arch }}
+      shell: pwsh
+      run: |
+        $arch = if ("${{ matrix.arch }}" -eq "x86") { "x86" } else { "x64" }
+        $host_arch = "x64"
+        & "${Env:COMSPEC}" /s /c "`"${Env:VSDEVCMD}`" -arch=$arch -host_arch=$host_arch -no_logo && set" `
+          | % { , ($_ -Split '=', 2) } `
+          | % { [System.Environment]::SetEnvironmentVariable($_[0], $_[1]) }
+        meson --buildtype release --backend vs2022 build-msvc-$arch
+        msbuild -m build-msvc-$arch/dxvk.sln
 
-      - name: Build x64 DLLs
-        run: |
-          # Your build commands for x64 go here
+    - name: Prepare artifacts for ${{ matrix.arch }}
+      shell: pwsh
+      run: |
+        mkdir artifacts-${{ matrix.arch }}
+        Get-ChildItem -Path build-msvc-${{ matrix.arch }}\src -Include *.dll,*.pdb -Recurse `
+          | Copy-Item -Destination artifacts-${{ matrix.arch }}
 
-      - name: Upload x64 Artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: x64-dlls
-          path: path/to/x64.dll
+    - name: Upload ${{ matrix.arch }} artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dxvk-${{ matrix.arch }}-dlls
+        path: artifacts-${{ matrix.arch }}/
+        if-no-files-found: error
