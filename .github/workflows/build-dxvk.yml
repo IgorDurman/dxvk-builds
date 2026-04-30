@@ -1,0 +1,42 @@
+name: Build DXVK
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      matrix:
+        arch: [x86, x64]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Setup MSVC
+        run: |
+          choco install visualstudio2019community --version 16.11.4
+          choco install visualstudio2019-workload-vctools
+
+      - name: Download SDK Headers
+        run: |
+          curl -LO https://example.com/sdk-headers.zip
+          unzip sdk-headers.zip -d sdk-headers
+
+      - name: Build DXVK
+        run: |
+          if [ "${{ matrix.arch }}" == "x86" ]; then
+            build_dxvk_x86.bat
+          else
+            build_dxvk_x64.bat
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: dxvk-${{ matrix.arch }}
+          path: build/${{ matrix.arch }}/
